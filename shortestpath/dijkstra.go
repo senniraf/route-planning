@@ -3,43 +3,28 @@ package shortestpath
 import (
 	"math"
 	"route-planning/graph"
+	"route-planning/priorityqueue"
 )
 
 type Dijkstra struct {
 	Graph graph.Graph
 }
 
-func (d Dijkstra) PairShortestPath(s, t graph.Node) (float64, []graph.Edge) {
-	predecessor := make([]graph.Edge, d.Graph.N())
+type StoppingCriterion func(priorityqueue.Element, DijkstraState) bool
 
-	cost := make([]float64, d.Graph.N())
-	fill(cost, math.Inf(0))
-	cost[s] = 0.0
+type DijkstraState struct {
+	Cost        []float64
+	Predecessor []graph.Edge
+	PQ          priorityqueue.PriorityQueue
+}
 
-	pq := newPriorityQueue()
-	pq.Push(pqElement{node: s, cost: 0.0})
+func (d Dijkstra) Pair(s, t graph.Node) (float64, []graph.Edge) {
 
-	for pq.Len() != 0 {
-		v := pq.Pop().node
-
-		if v == t {
-			break
-		}
-
-		for _, e := range d.Graph.OutgoingEdges(v) {
-			w := e.To
-
-			if newCost := cost[v] + e.Cost; cost[w] > newCost {
-				cost[w] = newCost
-				predecessor[w] = e
-
-				if i := pq.Index(w); i < pq.Len() {
-					pq.Remove(i)
-				}
-				pq.Push(pqElement{node: w, cost: cost[w]})
-			}
-		}
+	stop := func(element priorityqueue.Element, state DijkstraState) bool {
+		return element.Node == t
 	}
+
+	cost, predecessor := d.Run(s, stop)
 
 	if cost[t] == math.Inf(0) {
 		return math.Inf(0), []graph.Edge{}
@@ -56,12 +41,62 @@ func (d Dijkstra) PairShortestPath(s, t graph.Node) (float64, []graph.Edge) {
 	return cost[t], path
 }
 
+func (d Dijkstra) ToAll(s graph.Node) ([]float64, []graph.Edge) {
+	return d.Run(s, nil)
+}
+
+func (d Dijkstra) Run(s graph.Node, stop StoppingCriterion) ([]float64, []graph.Edge) {
+	if stop == nil {
+		stop = func(el priorityqueue.Element, ds DijkstraState) bool {
+			return false
+		}
+	}
+
+	state := DijkstraState{
+		Predecessor: make([]graph.Edge, d.Graph.N()),
+		Cost:        make([]float64, d.Graph.N()),
+		PQ:          priorityqueue.NewMinHeap(),
+	}
+
+	fill(state.Cost, math.Inf(0))
+	state.Cost[s] = 0.0
+
+	state.PQ.Push(priorityqueue.Element{Node: s, Cost: 0.0})
+
+	for state.PQ.Len() != 0 {
+		element := state.PQ.Pop()
+
+		if stop(element, state) {
+			break
+		}
+
+		v := element.Node
+
+		if element.Cost > state.Cost[v] {
+			continue
+		}
+
+		for _, e := range d.Graph.OutgoingEdges(v) {
+			w := e.To
+
+			if newCost := state.Cost[v] + e.Cost; state.Cost[w] > newCost {
+				state.Cost[w] = newCost
+				state.Predecessor[w] = e
+
+				state.PQ.Push(priorityqueue.Element{Node: w, Cost: state.Cost[w]})
+			}
+		}
+	}
+
+	return state.Cost, state.Predecessor
+}
+
 type BidirectDijkstra struct {
 	ForwardGraph  graph.Graph
 	BackwardGraph graph.Graph
 }
 
-func (bd *BidirectDijkstra) PairShortestPath(s, t graph.Node) (float64, []graph.Edge) {
+func (bd *BidirectDijkstra) Pair(s, t graph.Node) (float64, []graph.Edge) {
 	forward := newBidirectDijkstraPart(bd.ForwardGraph, s, t)
 	backward := newBidirectDijkstraPart(bd.BackwardGraph, t, s)
 
@@ -69,14 +104,15 @@ func (bd *BidirectDijkstra) PairShortestPath(s, t graph.Node) (float64, []graph.
 	var meetingNode graph.Node
 	for forward.pq.Len() > 0 || backward.pq.Len() > 0 {
 
-		if upperBound < backward.pq.Top().cost+forward.pq.Top().cost {
+		if upperBound < backward.pq.Top().Cost+forward.pq.Top().Cost {
 			break
 		}
 
-		if forward.pq.Top().cost <= backward.pq.Top().cost {
+		if forward.pq.Top().Cost <= backward.pq.Top().Cost {
 			if cont := forward.advance(*backward, &meetingNode, &upperBound); !cont {
 				break
 			}
+
 		} else {
 			if cont := backward.advance(*forward, &meetingNode, &upperBound); !cont {
 				break
@@ -129,7 +165,7 @@ func (bd *BidirectDijkstra) PairShortestPath(s, t graph.Node) (float64, []graph.
 
 type bidirectDijkstraPart struct {
 	g           graph.Graph
-	pq          *priorityQueue
+	pq          priorityqueue.PriorityQueue
 	predecessor []graph.Edge
 	cost        []float64
 
@@ -143,8 +179,8 @@ func newBidirectDijkstraPart(g graph.Graph, source, target graph.Node) *bidirect
 	fill(cost, math.Inf(0))
 	cost[source] = 0.0
 
-	pq := newPriorityQueue()
-	pq.Push(pqElement{node: source, cost: 0.0})
+	pq := priorityqueue.NewMinHeap()
+	pq.Push(priorityqueue.Element{Node: source, Cost: 0.0})
 
 	return &bidirectDijkstraPart{
 		g:           g,
@@ -156,12 +192,17 @@ func newBidirectDijkstraPart(g graph.Graph, source, target graph.Node) *bidirect
 }
 
 func (bdp *bidirectDijkstraPart) advance(otherPart bidirectDijkstraPart, meetingNode *graph.Node, upperBound *float64) bool {
-	v := bdp.pq.Pop().node
+	element := bdp.pq.Pop()
+	v := element.Node
 
 	if v == bdp.target {
 		*meetingNode = bdp.target
 		*upperBound = bdp.cost[v]
 		return false
+	}
+
+	if element.Cost > bdp.cost[v] {
+		return true
 	}
 
 	for _, e := range bdp.g.OutgoingEdges(v) {
@@ -171,11 +212,7 @@ func (bdp *bidirectDijkstraPart) advance(otherPart bidirectDijkstraPart, meeting
 			bdp.cost[w] = newCost
 			bdp.predecessor[w] = e
 
-			if i := bdp.pq.Index(w); i < bdp.pq.Len() {
-				bdp.pq.Remove(i)
-			}
-
-			bdp.pq.Push(pqElement{node: w, cost: newCost})
+			bdp.pq.Push(priorityqueue.Element{Node: w, Cost: newCost})
 			if newUpperBound := newCost + otherPart.cost[w]; *upperBound > newUpperBound {
 				*meetingNode = w
 				*upperBound = newUpperBound

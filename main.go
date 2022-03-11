@@ -72,7 +72,7 @@ func main() {
 	s, t := graph.Node(cli.Dijkstra.Source-1), graph.Node(cli.Dijkstra.Target-1)
 
 	start := time.Now()
-	c, path := algo.PairShortestPath(s, t)
+	c, path := algo.Pair(s, t)
 	took := time.Since(start)
 
 	fmt.Printf("Shortest path algorithm took: %v\n", took)
